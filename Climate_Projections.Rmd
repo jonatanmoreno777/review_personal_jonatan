@@ -1,0 +1,904 @@
+---
+title: "Trend Analysis for Projected Maximum and Minimum Temperature at Utah (USA) Ski Resorts"
+author: "Hadia Akbar, Emily Wilkins"
+date: "May 1, 2021"
+output:
+  html_document:
+    df_print: paged
+---
+This document provides a trend analysis for future projections of maximum and minimum temperature for Utah (USA) from 2021-2099. The script downloads data from the hydroshare repository, calculates 95th percentile for max and min temperature for December = March (typical ski season) for Northern and Southern Utah.
+
+```{r setup, include=FALSE}
+#Set global options
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, cache = TRUE)
+```
+
+#### Load the libraries needed for this analysis
+```{r, message = FALSE}
+library(ncdf4)    #to read the netcdf data
+library(raster)   #to extract times series data from raster
+library(tidyverse)#to mutate data, apply statistics
+library(dplyr)
+library(ggplot2)  #to plot
+library(trend) # For Mann-Kendall trend test and Sen's slope
+```
+
+# 1- Data Download
+We have saved the files downloaded from NA CORDEX needed for this analysis at a hydroshare repository. The next part download data from hydrosahre and unzips the files in the working directory.
+```{r}
+file <- "ClimateProjectionsData.zip"
+url <- "https://www.hydroshare.org/resource/a1c6c9300f63482a95634996fa971454/data/contents/DataDownload/Climate Projections/ClimateProjectionsData.zip"
+#Downloading might take some time (~15 minutes), be patient.
+if (!file.exists(file)){
+  download.file(url, file)
+} 
+# If this does not work, manually download from the link above, unzip, and save to the working directory
+```
+
+```{r, cache = TRUE}
+#Unzip the data files in the working directory. This again would take some time, ~5 min.
+unzip(file)
+```
+
+# 2- Extracting Data
+The NA CORDEX data comes as raster brick containing multi layers of data. The next part extracts data for the required area.
+As we need data for Utah, we will create a grid containing coordinates for Utah which will later be used to crop data for our area of interest.
+```{r}
+area<- extent(-115, -105, 35, 45)
+#Also, setup a grid for Northern and Southern Utah. 
+##coordinates, by=interval
+lon<- rep(seq(-112.5,-111,by=0.5), each=5)
+lat <- rep(seq(40,42, 0.5),times=4)
+north <- cbind(lon,lat)
+
+lon<- rep(seq(-113.5,-112,by=0.5), each=5)
+lat <- rep(seq(37,39, 0.5),times=4)
+south <- cbind(lon,lat)
+```
+
+```{r}
+#.rs.unloadPackage("tidyr")    #tidyr causes a conflict with raster package so we will unload the package.
+#tidyverse_conflicts()
+```
+
+## 3- Projections for Maximum Temperature
+### 3.1 - Maximum Temperature - RCP 2.6
+We will first extract data for maximum temperature for RCP 2.6 scenario.
+Read data from file and extract data for Northern and Southern Utah using grid established in the last step.
+```{r}
+#file name
+f<-  as.character("tasmax.rcp26.EC-EARTH.RCA4.mon.NAM-44i.raw.nc")
+
+#The following line of code extracts data from the netcdf file for selected variable
+Data <- raster::brick(f, varname="tasmax")
+
+#Crop the data series for the selected area
+a.crop<- crop(Data, area)
+#Extract data for Northern Utah
+Ext_North<- data.frame(raster::extract(a.crop, north, method="bilinear"))
+
+#Create a time series from the extracted data
+North <- data.frame(Years= Data@z$Date, Tmax=colMeans(Ext_North, na.rm=TRUE))
+##convert from K to degC
+North$Tmax_C <- North$Tmax -273
+```
+
+Create a cleaned up copy of the data from last step as a tibble, this is required for calculations to be done for December - March
+```{r}
+NUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), by='month'),Tmax = North$Tmax_C)
+
+NUtah2.6<- NUtah %>% 
+  # reformat data to keep months and days, but use identical year, so...
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  # This filters to only include December - March
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  # shift so all in one year and use for grouping
+  group_by(run=as.integer(format(date-100, '%Y'))) %>% 
+  summarise(    # aggregate each group for the specified time
+    start_date = min(date), 
+    end_date = max(date), 
+    Tmax_mean = mean(Tmax),
+    P95 = quantile(Tmax, 0.95))
+
+NUtah2.6 <-  NUtah2.6 %>%
+  dplyr::select(run, Tmax_mean) %>%
+  filter(run >= 2021)%>%
+  mutate(RCP = "2.6")
+```
+Repeat the same procedure to get data for Southern Utah
+```{r}
+##extract data for the selected coordinates
+Ext_South<- data.frame(raster::extract(a.crop, south, method="bilinear"))
+
+South <- data.frame(Years= Data@z$Date, Tmax=colMeans(Ext_South, na.rm=TRUE))
+##convert from K to degC
+South$Tmax_C <- South$Tmax -273
+
+SUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), by='month'), Tmax = South$Tmax_C)
+
+SUtah2.6<- SUtah %>% 
+  # reformat data to keep months and days, but use identical year, so...
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  # Use the dates for the ski season here
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  # shift so all in one year and use for grouping
+  group_by(run=as.integer(format(date-100, '%Y'))) %>% 
+  summarise(    # aggregate each gruop for the specified time
+    start_date = min(date), end_date = max(date), Tmax_mean = mean(Tmax),
+    P95 = quantile(Tmax, 0.95))
+
+SUtah2.6 <-  SUtah2.6 %>%
+  dplyr::select(run, Tmax_mean) %>%
+  filter(run >= 2021)%>%
+  mutate(RCP = "2.6")
+```
+
+## 3.2 - Maximum Temperature - RCP 4.5
+```{r}
+f<-  as.character("tasmax.rcp45.EC-EARTH.RCA4.mon.NAM-44i.raw.nc")
+Data <- brick(f, varname="tasmax")
+
+#Crop the data series for the selected area
+a.crop<- crop(Data, area)
+
+#North
+##extract data for the selected coordinates
+Ext_North<- data.frame(raster::extract(a.crop, north, method="bilinear"))
+
+#Average for the entire area
+North <- data.frame(Years= Data@z$Date, Tmax=colMeans(Ext_North, na.rm=TRUE))
+##convert from K to degC
+North$Tmax_C <- North$Tmax -273
+
+#Create a cleaned up copy of the data from last step as a tibble, this is 
+#required for calculations to be done for November - March
+NUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), by = 'month'), 
+  Tmax = North$Tmax_C)
+
+NUtah4.5<- NUtah %>% 
+  # reformat data to keep months and days, but use identical year.
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  # Use the dates for the ski season here
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  # shift so all in one year and use for grouping
+  group_by(run=as.integer(format(date-100, '%Y'))) %>% 
+  summarise(    # aggregate each gruop for the specified time
+    start_date = min(date), end_date = max(date), Tmax_mean = mean(Tmax),
+    P95 = quantile(Tmax, 0.95))
+
+NUtah4.5 <-  NUtah4.5 %>%
+  dplyr::select(run, Tmax_mean) %>%
+  filter(run >= 2021)%>%
+  mutate(RCP = "4.5")
+
+#Repeat the same for extracting data for Southern Utah
+Ext_South<- data.frame(raster::extract(a.crop, south, method="bilinear"))
+
+#Average for the entire area
+South <- data.frame(Years= Data@z$Date, Tmax=colMeans(Ext_South, na.rm=TRUE))
+##convert from K to degC
+South$Tmax_C <- South$Tmax -273
+
+#Create a cleaned up copy of the data from last step as a tibble, this is required for calculations to be done for November - March
+SUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), by = 'month'),   Tmax = South$Tmax_C)
+
+SUtah4.5<- SUtah %>% 
+  # reformat data to keep months and days, but use identical year, so...
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  # Use the dates for the ski season here
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  # shift so all in one year and use for grouping
+  group_by(run=as.integer(format(date-100, '%Y'))) %>% 
+  summarise(    # aggregate each gruop for the specified time
+    start_date = min(date), end_date = max(date), Tmax_mean = mean(Tmax),
+    P95 = quantile(Tmax, 0.95))
+
+SUtah4.5<-  SUtah4.5 %>%
+  dplyr::select(run, Tmax_mean) %>%
+  filter(run >= 2021)%>%
+  mutate(RCP = "4.5")
+```
+
+## 3.3 - Maximimum Temperature - RCP 8.5
+```{r}
+f<-  as.character("tasmax.rcp85.EC-EARTH.RCA4.mon.NAM-44i.raw.nc")
+
+#The following line of code extracts data from the netcdf file
+#Get data for Tmax projections RCP_8.5
+Data <- brick(f, varname="tasmax")
+
+#Crop the data series for the selected area
+a.crop<- crop(Data, area)
+
+#North
+##extract data for the selected coordinates
+Ext_North<- data.frame(raster::extract(a.crop, north, method="bilinear"))
+
+#Average for the entire area
+North <- data.frame(Years= Data@z$Date, Tmax=colMeans(Ext_North, na.rm=TRUE))
+##convert from K to degC
+North$Tmax_C <- North$Tmax -273
+
+#Create a cleaned up copy of the data from last step as a tibble, this is 
+#required for calculations to be done for November - March
+NUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), by = 'month'), 
+  Tmax = North$Tmax_C)
+
+NUtah8.5<- NUtah %>% 
+  # reformat data to keep months and days, but use identical year, so...
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  # Use the dates for the ski season here
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  # shift so all in one year and use for grouping
+  group_by(run=as.integer(format(date-100, '%Y'))) %>% 
+  summarise(    # aggregate each gruop for the specified time
+    start_date = min(date), end_date = max(date), Tmax_mean = mean(Tmax),
+    P95 = quantile(Tmax, 0.95))
+
+NUtah8.5 <-  NUtah8.5 %>%
+  dplyr::select(run, Tmax_mean) %>%
+  filter(run >= 2021)%>%
+  mutate(RCP = "8.5")
+
+#Repeat the same for extracting data for Southern Utah
+##extract data for the selected coordinates
+Ext_South<- data.frame(raster::extract(a.crop, south, method="bilinear"))
+
+#Average for the entire area
+South <- data.frame(Years= Data@z$Date, Tmax=colMeans(Ext_South, na.rm=TRUE))
+##convert from K to degC
+South$Tmax_C <- South$Tmax -273
+
+#Create a cleaned up copy of the data from last step as a tibble, this is 
+#required for calculations to be done for November - March
+SUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), by = 'month'), 
+  Tmax = South$Tmax_C)
+
+SUtah8.5 <- SUtah %>% 
+  # reformat data to keep months and days, but use identical year, so...
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  # Use the dates for the ski season here
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  # shift so all in one year and use for grouping
+  group_by(run=as.integer(format(date-100, '%Y'))) %>% 
+  summarise(    # aggregate each gruop for the specified time
+    start_date = min(date), end_date = max(date), Tmax_mean = mean(Tmax),
+    P95 = quantile(Tmax, 0.95))
+
+SUtah8.5 <- SUtah8.5 %>%
+  dplyr::select(run, Tmax_mean) %>%
+  filter(run >= 2021)%>%
+  mutate(RCP = "8.5")
+```
+Combine the data for Northern Utah and Southern Utah.
+```{r}
+NUtah <- rbind(NUtah2.6, NUtah4.5, NUtah8.5)
+NUtah$Region <- c("Northern Utah")
+SUtah <- rbind(SUtah2.6, SUtah4.5, SUtah8.5)
+SUtah$Region <- c("Southern Utah")
+Combined_Tmax <- rbind(NUtah, SUtah)
+
+# Filter out year 2100 since this would represent the 2100-2101 ski season, and we don't have 2101 data (so it's not accurate)
+Combined_Tmax <- Combined_Tmax %>% dplyr::filter(run != 2100)
+```
+
+Plot the projections for Northern and Southern Utah for the three RCP Scenarios
+```{r, fig.height=5, fig.width=5}
+a <- ggplot(Combined_Tmax,
+           aes(x=run,y=Tmax_mean, color=RCP)) + 
+  scale_color_manual(values = c("blue", "black", "red"))+
+  geom_line(alpha=0.3)+
+  geom_smooth(method = "lm")+
+  labs(#title= "Future Projection for Maximum Temperature- 95th Percentile (Dec-March)",
+    y = "Projection for Maximum Temperature (°C), Dec - March", x = "Year") + 
+  xlim(2021,2099)+theme_bw()+
+  facet_wrap(~ Region, ncol=1)
+a
+```
+
+## Running Mann-Kendall Trend tests and Sen's slope for Max temp 2021 - 2100
+```{r}
+### Run Mann-Kendall Trend tests and Sen's slope
+
+# Setting up an empty table to record results
+table1 <- matrix(NA, nrow = 6, ncol = 12)
+x <- c("RCP", "geo", "z stat", "S", "S var", "tau", "p-value", "sen's slope", "95% CI, low", "95% CI, high", "Change by 2100", "metric")
+colnames(table1) <- x
+table1 <- as.data.frame(table1)
+table1[,1:2] <- as.character(table1[,1:2])
+
+GEO <- c("Northern Utah","Northern Utah","Northern Utah", "Southern Utah", "Southern Utah", "Southern Utah")
+RCP <- c("2.6", "4.5", "8.5", "2.6", "4.5", "8.5")
+
+##### Max Temp M-K
+for (i in 1:length(GEO)) {
+  rcp <- as.character(RCP[i])  #choose scenario
+  geo <- as.character(GEO[i]) # Chose geography
+  
+  data1 <- Combined_Tmax %>% dplyr::filter(RCP == rcp) %>% dplyr::filter(Region == geo) #Filters the database to only have data from this geo and RCP
+  maxtemp <- trend::mk.test(data1$Tmax_mean, continuity = TRUE) # Runs Mann-Kendall trend test
+  sen <- sens.slope(data1$Tmax_mean, conf.level = 0.95)
+  # Fill in the table
+  table1[i,1] <- rcp
+  table1[i,2] <- geo
+  table1[i,3] <- maxtemp$statistic # records z statistic
+  table1[i,4] <- maxtemp$estimates[1] # records S
+  table1[i,5] <- maxtemp$estimates[2] # records variance on S
+  table1[i,6] <- maxtemp$estimates[3] # records tau
+  table1[i,7] <- maxtemp$p.value # records p-value
+  table1[i,8] <- sen$estimates # records Sen's slope
+  table1[i,9] <- sen$conf.int[1] # records CI
+  table1[i,10] <- sen$conf.int[2] # records CI
+  table1[i,11] <- (sen$estimates) * 78
+  table1[i,12] <- "Mean Seasonal Daily Max Temp Projection"
+}
+
+# Rounds everything to 3 decimals
+table1[,3:11] <- round(table1[,3:11], 3)
+table1
+# Output table if desired
+# write.csv(table1, "M_K_trends_maxtemp_PROJECTION.csv", row.names = FALSE)
+```
+
+
+## 4- Projections for Minimum Temperature
+### 4.1 - Minimimum Temperature - RCP 2.6
+```{r}
+f<-  as.character("tasmin.rcp26.EC-EARTH.RCA4.mon.NAM-44i.raw.nc")
+
+Data <- brick(f, varname="tasmin")
+a.crop<- crop(Data, area)
+
+Ext_North<- data.frame(raster::extract(a.crop, north, method="bilinear"))
+
+North <- data.frame(Years= Data@z$Date, Tmin=colMeans(Ext_North, na.rm=TRUE))
+
+##convert from K to degC
+North$Tmin_C <- North$Tmin -273
+
+NUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), by = 'month'), 
+  Tmin = North$Tmin_C)
+
+NUtah2.6<- NUtah %>% 
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  group_by(run=as.integer(format(date-100, '%Y'))) %>% 
+  summarise(start_date = min(date), end_date = max(date), Tmin_mean = mean(Tmin),
+    P95 = quantile(Tmin, 0.95))
+
+NUtah2.6 <-  NUtah2.6 %>%
+  dplyr::select(run, Tmin_mean) %>%
+  filter(run >= 2021)%>%
+  mutate(RCP = "2.6")
+
+Ext_South<- data.frame(raster::extract(a.crop, south, method="bilinear"))
+
+South <- data.frame(Years= Data@z$Date, Tmin=colMeans(Ext_South, na.rm=TRUE))
+
+##convert from K to degC
+South$Tmin_C <- South$Tmin -273
+
+SUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), by = 'month'), 
+  Tmin = South$Tmin_C)
+
+SUtah2.6<- SUtah %>% 
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  group_by(run=as.integer(format(date-100, '%Y'))) %>% 
+  summarise(start_date = min(date), end_date = max(date), Tmin_mean = mean(Tmin),
+    P95 = quantile(Tmin, 0.95))
+
+SUtah2.6 <-  SUtah2.6 %>%
+  dplyr::select(run, Tmin_mean) %>%
+  filter(run >= 2021)%>%
+  mutate(RCP = "2.6")
+```
+
+### 4.2 - Minimimum Temperature - RCP 4.5
+```{r}
+f<-  as.character("tasmin.rcp45.EC-EARTH.RCA4.mon.NAM-44i.raw.nc")
+Data <- brick(f, varname="tasmin")
+a.crop<- crop(Data, area)
+
+Ext_North<- data.frame(raster::extract(a.crop, north, method="bilinear"))
+
+North <- data.frame(Years= Data@z$Date, Tmin=colMeans(Ext_North, na.rm=TRUE))
+##convert from K to degC
+North$Tmin_C <- North$Tmin -273
+
+NUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), 
+             by= 'month'), Tmin = North$Tmin_C)
+
+NUtah4.5<- NUtah %>% 
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  filter(same_year < as.Date('2006-04-01') |
+           same_year >=as.Date('2006-11-30')) %>% 
+  group_by(run=as.integer(format(date-100, '%Y'))) %>% 
+  summarise(start_date = min(date), end_date = max(date), Tmin_mean = mean(Tmin),
+    P95 = quantile(Tmin, 0.95))
+
+NUtah4.5 <-  NUtah4.5 %>%
+  dplyr::select(run, Tmin_mean) %>%
+  filter(run >= 2021)%>%
+  mutate(RCP = "4.5")
+
+Ext_South<- data.frame(raster::extract(a.crop, south, method="bilinear"))
+
+South <- data.frame(Years= Data@z$Date, Tmin=colMeans(Ext_South, na.rm=TRUE))
+##convert from K to degC
+South$Tmin_C <- South$Tmin -273
+
+SUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), 
+             by = 'month'), Tmin = South$Tmin_C)
+
+SUtah4.5<- SUtah %>% 
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  group_by(run=as.integer(format(date-100, '%Y'))) %>% 
+  summarise(start_date = min(date), end_date = max(date), Tmin_mean = mean(Tmin),
+    P95 = quantile(Tmin, 0.95))
+
+SUtah4.5<-  SUtah4.5 %>%
+  dplyr::select(run, Tmin_mean) %>%
+  filter(run >= 2021)%>%
+  mutate(RCP = "4.5")
+```
+
+### 4.3 - Minimimum Temperature - RCP 8.5
+```{r}
+f<-  as.character("tasmin.rcp85.EC-EARTH.RCA4.mon.NAM-44i.raw.nc")
+
+Data <- brick(f, varname="tasmin")
+a.crop<- crop(Data, area)
+
+Ext_North<- data.frame(raster::extract(a.crop, north, method="bilinear"))
+
+North <- data.frame(Years= Data@z$Date, Tmin=colMeans(Ext_North, na.rm=TRUE))
+##convert from K to degC
+North$Tmin_C <- North$Tmin -273
+
+NUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), by = 'month'), Tmin = North$Tmin_C)
+
+NUtah8.5<- NUtah %>% 
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  group_by(run=as.integer(format(date-100, '%Y'))) %>% 
+  summarise(start_date = min(date), end_date = max(date), Tmin_mean = mean(Tmin),
+    P95 = quantile(Tmin, 0.95))
+
+NUtah8.5 <-  NUtah8.5 %>%
+  dplyr::select(run, Tmin_mean) %>%
+  filter(run >= 2021)%>%
+  mutate(RCP = "8.5")
+
+Ext_South<- data.frame(raster::extract(a.crop, south, method="bilinear"))
+
+South <- data.frame(Years= Data@z$Date, Tmin=colMeans(Ext_South, na.rm=TRUE))
+##convert from K to degC
+South$Tmin_C <- South$Tmin -273
+
+SUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), 
+             by = 'month'), Tmin = South$Tmin_C)
+
+SUtah8.5<- SUtah %>% 
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  filter(same_year < as.Date('2006-04-01') | 
+           same_year >=as.Date('2006-11-30')) %>% 
+  group_by(run=as.integer(format(date-100, '%Y'))) %>% 
+  summarise(start_date = min(date), end_date = max(date), Tmin_mean = mean(Tmin),
+    P95 = quantile(Tmin, 0.95))
+
+SUtah8.5<-  SUtah8.5 %>%
+  dplyr::select(run, Tmin_mean) %>%
+  filter(run >= 2021)%>%
+  mutate(RCP = "8.5")
+```
+
+Combine the data for Northern and Southern Utah.  
+```{r}
+NUtah <- rbind(NUtah2.6, NUtah4.5, NUtah8.5)
+NUtah$Region <- c("Northern Utah")
+SUtah <- rbind(SUtah2.6, SUtah4.5, SUtah8.5)
+SUtah$Region <- c("Southern Utah")
+Combined_Tmin <- rbind(NUtah, SUtah)
+
+# Filter out year 2100 since this would represent the 2100-2101 ski season, and we don't have 2101 data (so it's not accurate)
+Combined_Tmin <- Combined_Tmin %>% dplyr::filter(run != 2100)
+```
+
+```{r, fig.height=5, fig.width=5}
+b <- ggplot(Combined_Tmin,
+            aes(x=run,y=Tmin_mean, color=RCP)) + 
+  scale_color_manual(values = c("blue", "black", "red"))+
+  geom_line(alpha=0.3)+
+  geom_smooth(method = "lm")+
+  labs(
+    #title= "Future Projection for Minimum Temperature- 95th Percentile (Dec-March)",
+    y = "Projection for Minimum Temperature (°C), Dec - March", x = "Year") +
+  xlim(2021,2099)+theme_bw()+
+  facet_wrap(~ Region, ncol=1) # if removed, x ticks don't show in all plots
+b
+
+# Uncomment if you want to save the plots
+# ggsave("projection_Tmax_new.tiff", plot= a , height=5 , width=5 , units= "in", dpi= 600)
+# ggsave("projection_Tmin_new.tiff", plot= b , height=5 , width=5 , units= "in", dpi= 600)
+```
+
+## Running Mann-Kendall Trend tests and Sen's slope for Min temp 2021 - 2100
+```{r}
+### Run Mann-Kendall Trend tests and Sen's slope
+
+# Setting up an empty table to record results
+table1 <- matrix(NA, nrow = 6, ncol = 12)
+x <- c("RCP", "geo", "z stat", "S", "S var", "tau", "p-value", "sen's slope", "95% CI, low", "95% CI, high", "Change by 2100", "metric")
+colnames(table1) <- x
+table1 <- as.data.frame(table1)
+table1[,1:2] <- as.character(table1[,1:2])
+
+GEO <- c("Northern Utah","Northern Utah","Northern Utah", "Southern Utah", "Southern Utah", "Southern Utah")
+RCP <- c("2.6", "4.5", "8.5", "2.6", "4.5", "8.5")
+
+##### Max Temp M-K
+for (i in 1:length(GEO)) {
+  rcp <- as.character(RCP[i])  #choose scenario
+  geo <- as.character(GEO[i]) # Chose geography
+  
+  data1 <- Combined_Tmin %>% dplyr::filter(RCP == rcp) %>% dplyr::filter(Region == geo) #Filters the database to only have data from this geo and RCP
+  maxtemp <- trend::mk.test(data1$Tmin_mean, continuity = TRUE) # Runs Mann-Kendall trend test
+  sen <- sens.slope(data1$Tmin_mean, conf.level = 0.95)
+  # Fill in the table
+  table1[i,1] <- rcp
+  table1[i,2] <- geo
+  table1[i,3] <- maxtemp$statistic # records z statistic
+  table1[i,4] <- maxtemp$estimates[1] # records S
+  table1[i,5] <- maxtemp$estimates[2] # records variance on S
+  table1[i,6] <- maxtemp$estimates[3] # records tau
+  table1[i,7] <- maxtemp$p.value # records p-value
+  table1[i,8] <- sen$estimates # records Sen's slope
+  table1[i,9] <- sen$conf.int[1] # records CI
+  table1[i,10] <- sen$conf.int[2] # records CI
+  table1[i,11] <- (sen$estimates) * 78
+  table1[i,12] <- "Mean Seasonal Daily Min Temp Projection"
+}
+
+# Rounds everything to 3 decimals
+table1[,3:11] <- round(table1[,3:11], 3)
+table1
+# Output table if desired
+# write.csv(table1, "M_K_trends_mintemp_PROJECTION.csv", row.names = FALSE)
+```
+
+## 5- Projections for Precipitation
+
+```{r, fig.height=5, fig.width=5}
+### RCP 2.6
+f<-  as.character("pr.rcp26.EC-EARTH.RCA4.mon.NAM-44i.raw.nc")
+
+#The following line of code actutally extracts data from the netcdf file, Precipitation projections RCP_2.6
+Data <- brick(f, varname="pr")
+
+#Get a grid of your area of interest (can be area of study or a larger grid)
+area<- extent(-115, -105, 35,45)
+a.crop<- crop(Data, area)
+
+#North
+#Get the data for coordinates of interest, that should be equal to or a subset of the previously mentioned grid
+##coordinates, by=the interval
+lon<- rep(seq(-112.5,-111,by=0.5), each=5)
+lat <- rep(seq(40,42, 0.5),times=4)
+coord <- cbind(lon,lat)
+
+##extract data for the selected coordinates
+Data_Ext<- data.frame(raster::extract(a.crop, coord, method="bilinear"))
+
+#Average for the entire area
+North <- data.frame(Years= Data@z$Date, Ppt=colMeans(Data_Ext, na.rm=TRUE))
+##convert from kg.m2.s-1 to mm/day
+North$North <- North$Ppt*86400
+
+#Create data in tibble, this is required for calculations to be done
+#by resort season
+NUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), by = 'month'), 
+  Ppt= North$North)
+
+NUtah2.6<- NUtah %>% 
+  # reformat data to keep months and days, but use identical year, so...
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  # Use the dates for the ski season here
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  # shift so all in one year and use for grouping
+  group_by(run=as.integer(format(date-250, '%Y'))) %>% 
+  summarise(    # aggregate each gruop for the specified time Pptiod
+    start_date = min(date), end_date = max(date), 
+   Precip = mean(Ppt))
+#write.csv(NUtah26 , "NUtah_Ppt2.6.csv")
+
+NUtah2.6$start_date<- NULL
+NUtah2.6$end_date <- NULL
+
+#South
+#Get the data for coordinates of interest , that should be equal to or a subset of the previously mentioned grid
+##coordinates, by=the interval
+lon<- rep(seq(-113.5,-112,by=0.5), each=5)
+lat <- rep(seq(37,39, 0.5),times=4)
+coord <- cbind(lon,lat)
+##extract data for the selected coordinates
+Data_Ext<- data.frame(raster::extract(a.crop, coord, method="bilinear"))
+
+#Average for the entire area
+South <- data.frame(Years= Data@z$Date, Ppt=colMeans(Data_Ext, na.rm=TRUE))
+##convert from kg.m2.s-1 to mm/day
+South$South <- South$Ppt*86400
+
+#Create data in tibble, this is required for calculations to be done by resort season
+SUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), by = 'month'), 
+  Ppt= South$South)
+
+SUtah2.6<- SUtah %>% 
+  # reformat data to keep months and days, but use identical year, so...
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  # Use the dates for the ski season here
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  # shift so all in one year and use for grouping
+  group_by(run=as.integer(format(date-250, '%Y'))) %>% 
+  summarise(    # aggregate each gruop for the specified time Pptiod
+    start_date = min(date), end_date = max(date), 
+    Precip = mean(Ppt))
+#write.csv(SUtah26 , "SUtah_Ppt2.6.csv")
+
+SUtah2.6$start_date<- NULL
+SUtah2.6$end_date <- NULL
+
+###########################################
+##Same procedure Precipitation for RCP 4.5
+f<-  as.character("pr.rcp45.EC-EARTH.RCA4.mon.NAM-44i.raw.nc")
+
+#The following line of code actutally extracts data from the netcdf file
+Data <- brick(f, varname="pr")
+
+#North
+#Get a grid of your area of interest (can be area of study or a larger grid)
+area<- extent(-115, -105, 35,45)
+a.crop<- crop(Data, area)
+
+#North
+#Get the data for coordinates of interest , that should be equal to or a subset of the previously mentioned grid
+##coordinates, by=the interval
+lon<- rep(seq(-112.5,-111,by=0.5), each=5)
+lat <- rep(seq(40,42, 0.5),times=4)
+coord <- cbind(lon,lat)
+##extract data for the selected coordinates
+Data_Ext<- data.frame(raster::extract(a.crop, coord, method="bilinear"))
+
+#Average for the entire area
+North <- data.frame(Years= Data@z$Date, Ppt=colMeans(Data_Ext, na.rm=TRUE))
+##convert from kg.m2.s-1 to mm/day
+North$North <- North$Ppt*86400
+
+#Create data in tibble, this is required for calculations to be done
+#by resort season
+NUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), by = 'month'), 
+  Ppt= North$North)
+
+NUtah4.5<- NUtah %>% 
+  # reformat data to keep months and days, but use identical year, so...
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  # Use the dates for the ski season here
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  # shift so all in one year and use for grouping
+  group_by(run=as.integer(format(date-250, '%Y'))) %>% 
+  summarise(    # aggregate each gruop for the specified time period
+    start_date = min(date), end_date = max(date), 
+    Precip = mean(Ppt))
+#View(NUtah8.5)
+#write.csv(NUtah8.5 , "NUtah_Ppt8.5.csv")
+
+NUtah4.5$start_date<- NULL
+NUtah4.5$end_date <- NULL
+
+#South
+#Get the data for coordinates of interest , that should be equal to or a subset of the previously mentioned grid
+##coordinates, by=the interval
+lon<- rep(seq(-113.5,-112,by=0.5), each=5)
+lat <- rep(seq(37,39, 0.5),times=4)
+coord <- cbind(lon,lat)
+##extract data for the selected coordinates
+Data_Ext<- data.frame(raster::extract(a.crop, coord, method="bilinear"))
+
+#Average for the entire area
+South <- data.frame(Years= Data@z$Date, Ppt=colMeans(Data_Ext, na.rm=TRUE))
+##convert from kg.m2.s-1 to mm/day
+South$South <- South$Ppt*86400
+
+#Create data in tibble, this is required for calculations to be done
+#by resort season
+SUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), by = 'month'), 
+  Ppt= South$South)
+SUtah4.5<- SUtah %>% 
+  # reformat data to keep months and days, but use identical year, so...
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  # Use the dates for the ski season here
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  # shift so all in one year and use for grouping
+  group_by(run=as.integer(format(date-250, '%Y'))) %>% 
+  summarise(    # aggregate each gruop for the specified time period
+    start_date = min(date), end_date = max(date), 
+    Precip = mean(Ppt))
+#write.csv(SUtah8.5 , "SUtah_Ppt8.5.csv")
+
+SUtah4.5$start_date<- NULL
+SUtah4.5$end_date <- NULL
+
+##################################
+##Same procedure for Precipitation RCP 8.5
+f<-  as.character("pr.rcp85.EC-EARTH.RCA4.mon.NAM-44i.raw.nc")
+
+#The following line of code actutally extracts data from the netcdf file
+#Get data Precipitation projections RCP_8.5
+Data <- brick(f, varname="pr")
+
+#North
+#Get a grid of your area of interest (can be area of study or a larger grid)
+area<- extent(-115, -105, 35,45)
+a.crop<- crop(Data, area)
+
+#North
+#Get the data for coordinates of interest , that should be equal to or a subset of the previously mentioned grid
+##coordinates, by=the interval
+lon<- rep(seq(-112.5,-111,by=0.5), each=5)
+lat <- rep(seq(40,42, 0.5),times=4)
+coord <- cbind(lon,lat)
+##extract data for the selected coordinates
+Data_Ext<- data.frame(raster::extract(a.crop, coord, method="bilinear"))
+
+#Average for the entire area
+North <- data.frame(Years= Data@z$Date, Ppt=colMeans(Data_Ext, na.rm=TRUE))
+##convert from kg.m2.s-1 to mm/day
+North$North <- North$Ppt*86400
+
+#Create data in tibble, this is required for calculations to be done
+#by resort season
+NUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), by = 'month'), 
+  Ppt= North$North)
+
+NUtah8.5<- NUtah %>% 
+  # reformat data to keep months and days, but use identical year, so...
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  # Use the dates for the ski season here
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  # shift so all in one year and use for grouping
+  group_by(run=as.integer(format(date-250, '%Y'))) %>% 
+  summarise(    # aggregate each gruop for the specified time period
+    start_date = min(date), end_date = max(date), 
+   Precip = mean(Ppt))
+#View(NUtah8.5)
+#write.csv(NUtah8.5 , "NUtah_Ppt8.5.csv")
+
+NUtah8.5$start_date<- NULL
+NUtah8.5$end_date <- NULL
+
+#South
+#Get the data for coordinates of interest , that should be equal to or a subset of the previously mentioned grid
+##coordinates, by=the interval
+lon<- rep(seq(-113.5,-112,by=0.5), each=5)
+lat <- rep(seq(37,39, 0.5),times=4)
+coord <- cbind(lon,lat)
+##extract data for the selected coordinates
+Data_Ext<- data.frame(raster::extract(a.crop, coord, method="bilinear"))
+
+#Average for the entire area
+South <- data.frame(Years= Data@z$Date, Ppt=colMeans(Data_Ext, na.rm=TRUE))
+##convert from kg.m2.s-1 to mm/day
+South$South <- South$Ppt*86400
+
+#Create data in tibble, this is required for calculations to be done
+#by resort season
+SUtah<- tibble(
+  date = seq(as.Date('2006-01-01'), as.Date('2100-12-16'), by = 'month'), 
+  Ppt= South$South)
+SUtah8.5<- SUtah %>% 
+  # reformat data to keep months and days, but use identical year, so...
+  mutate(same_year = as.Date(format(date, '2006-%m-%d'))) %>% 
+  # Use the dates for the ski season here
+  filter(same_year < as.Date('2006-04-01') | same_year >=as.Date('2006-11-30')) %>% 
+  # shift so all in one year and use for grouping
+  group_by(run=as.integer(format(date-250, '%Y'))) %>% 
+  summarise(    # aggregate each gruop for the specified time period
+    start_date = min(date), end_date = max(date), 
+    Precip = mean(Ppt))
+#write.csv(SUtah8.5 , "SUtah_Ppt8.5.csv")
+
+SUtah8.5$start_date<- NULL
+SUtah8.5$end_date <- NULL
+
+NUtah2.6$RCP <- c("2.6")
+NUtah8.5$RCP <- c("8.5")
+NUtah4.5$RCP <- c("4.5")
+SUtah2.6$RCP <- c("2.6")
+SUtah8.5$RCP <- c("8.5")
+SUtah4.5$RCP <- c("4.5")
+
+NUtah <- rbind(NUtah2.6, NUtah8.5, NUtah4.5)
+NUtah$Region <- "Northern Utah"
+SUtah <- rbind(SUtah2.6, SUtah8.5, SUtah4.5)
+SUtah$Region <- "Southern Utah"
+all_precip <- rbind(NUtah, SUtah)
+# Filter out year 2100 since this would represent the 2100-2101 ski season, and we don't have 2101 data (so it's not accurate)
+Combined_precip <- all_precip %>% dplyr::filter(run != 2100) %>% dplyr::filter(run > 2020)
+
+# Figure
+precip_fig <- ggplot(all_precip,
+            aes(x=run,y=Precip, color=RCP)) + 
+  scale_color_manual(values = c("blue", "black", "red"))+
+  geom_line(alpha=0.3, lwd = 0.6)+
+  geom_smooth(method = "lm", lwd = 0.6)+
+  labs(y = "Projection for Avg. Daily Winter Precipitation (mm), Dec - March", x = "Year") +
+  xlim(2021,2099)+ theme_bw()+
+  facet_wrap(~ Region, ncol=1) # if removed, x ticks don't show in all plots
+precip_fig
+
+# Save it if desired
+# ggsave("projection_precip_new.tiff", plot= precip_fig , height=5 , width=5 , units= "in", dpi= 600)
+
+
+
+###############
+### Run Mann-Kendall Trend tests and Sen's slope
+
+# Setting up an empty table to record results
+table1 <- matrix(NA, nrow = 6, ncol = 12)
+x <- c("RCP", "geo", "z stat", "S", "S var", "tau", "p-value", "sen's slope", "95% CI, low", "95% CI, high", "Change by 2100", "metric")
+colnames(table1) <- x
+table1 <- as.data.frame(table1)
+table1[,1:2] <- as.character(table1[,1:2])
+
+GEO <- c("Northern Utah","Northern Utah","Northern Utah", "Southern Utah", "Southern Utah", "Southern Utah")
+RCP <- c("2.6", "4.5", "8.5", "2.6", "4.5", "8.5")
+
+##### Max Temp M-K
+for (i in 1:length(GEO)) {
+  rcp <- as.character(RCP[i])  #choose scenario
+  geo <- as.character(GEO[i]) # Chose geography
+  
+  data1 <- Combined_precip %>% dplyr::filter(RCP == rcp) %>% dplyr::filter(Region == geo) #Filters the database to only have data from this geo and RCP
+  maxtemp <- trend::mk.test(data1$Precip, continuity = TRUE) # Runs Mann-Kendall trend test
+  sen <- sens.slope(data1$Precip, conf.level = 0.95)
+  # Fill in the table
+  table1[i,1] <- rcp
+  table1[i,2] <- geo
+  table1[i,3] <- maxtemp$statistic # records z statistic
+  table1[i,4] <- maxtemp$estimates[1] # records S
+  table1[i,5] <- maxtemp$estimates[2] # records variance on S
+  table1[i,6] <- maxtemp$estimates[3] # records tau
+  table1[i,7] <- maxtemp$p.value # records p-value
+  table1[i,8] <- sen$estimates # records Sen's slope
+  table1[i,9] <- sen$conf.int[1] # records CI
+  table1[i,10] <- sen$conf.int[2] # records CI
+  table1[i,11] <- (sen$estimates) * 78
+  table1[i,12] <- "Precipitation Projection (daily mm by season)"
+}
+
+# Rounds everything to 3 decimals
+table1[,3:11] <- round(table1[,3:11], 3)
+table1
+# Output table if desired
+# write.csv(table1, "M_K_trends_precip_PROJECTION.csv", row.names = FALSE)
+
+```

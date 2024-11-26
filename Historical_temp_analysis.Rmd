@@ -1,0 +1,437 @@
+---
+title: "Trend Analysis for Maximum and Minimum Temperature at Utah (USA) Ski Resorts"
+author: "Hadia Akbar, Emily Wilkins"
+date: "May 1, 2021"
+output:
+  html_document:
+    df_print: paged
+---
+
+This document provides a trend analysis for maximum and minimum temperature for Utah (USA) ski resorts from 1980 - 2019. The script downloads data from Daymet for each resort, takes average for max and min temperature for each resort by resort ski season,and plots the trend for each resort for max and min temperature. It also runs a Mann-Kendall Trend test with Sen's slope to determine the temperature trend over time.
+
+```{r setup, include=FALSE}
+#Set global options
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, cache = TRUE)
+```
+
+### Load the libraries that will be required for this analysis.
+
+```{r }
+library(readr)            # to read csv files for resort detaoils
+library(daymetr)          # to get weather data of points
+library(tidyverse)        # for cleaning data
+library(lubridate)        # for managing dates and conversions
+library(ggplot2)          # for plotting 
+library(trend)            # for Mann-Kendall Trend test and Sen's slope
+```
+
+#1- Data Download
+First we download data from Daymet. Daymet provides modeled daily weather data for North America on a 1 km grid from 1980 - the previous year. Information about Daymet is available [here](https://daymet.ornl.gov/overview). 
+
+We need coordinates of each resort to download data in proper format. We have placed the required file to download data from daymet for this analysis in a hydroshare repository that can be accessed by the following lines
+
+```{r message=FALSE}
+##Download resort data from hydroshare
+file <- "resort_coords.csv"
+url <- "https://www.hydroshare.org/resource/a1c6c9300f63482a95634996fa971454/data/contents/DataDownload/Historic/resort_coords.csv"
+##Downlaod file in the working directory
+if (!file.exists(file)){
+  download.file(url, file)}
+# Reading in a file with all the ski resort coordinates
+coord <- read_csv("resort_coords.csv")
+```
+
+Use the coord file to downlaod data from Daymet.
+```{r , cache=TRUE }
+#Function to download Daymet data for each point in a CSV file by year
+raw_weather_data <- download_daymet_batch(
+  file_location = "resort_coords.csv",
+  start = 1980, end = 2019, 
+  internal = TRUE, # if T, it saves to workspace
+  simplify = TRUE) # if T, outputs tidy data (tibble)
+```
+
+# 2- Clean up and organize data
+We have a messy data frame with weather variables for each point at every day between the years specified. We will extract and tidy up the data.
+```{r }
+# Filters to only keep tmax and tmin
+weather_data <- raw_weather_data %>% filter(measurement %in% c("tmax..deg.c.", "tmin..deg.c."))
+
+# Reshaping data so that each weather variable is it's own column
+weather_data <- spread(weather_data, measurement, value)
+
+#Create a date column , create date from yday and year
+weather_data <- weather_data %>% 
+  mutate(date = as.Date(paste(year, yday, sep = "-"), "%Y-%j"))
+
+#Rename columns with intuitive names
+colnames(weather_data)[8] <- "Tmax"
+colnames(weather_data)[9] <- "Tmin"
+```
+
+# 3 - Summarize the data for each ski resort by ski season.
+We need to read in the file with the opening and closing dates of each resort which is also placed in the hydroshare repository.
+```{r }
+## Download and save the file containing opening and closing dates for each resort.
+file2 <- "Season.csv"
+url2 <-  "https://www.hydroshare.org/resource/a1c6c9300f63482a95634996fa971454/data/contents/DataDownload/Historic/Season.csv"
+
+if (!file.exists(file2)){
+  download.file(url2, file2)
+}
+
+#Read the downloaded file
+Resort <- read.csv("Season.csv")
+
+#Convert factors to dates and add columns with yday (day of the year) to the "resort" dataset.
+Resort <- Resort %>%
+  mutate(Opening = as.Date(Resort$Opening_longest, "%m/%d/%y"), 
+         Closing = as.Date(Resort$Closing_longest, "%m/%d/%y"))
+Resort <- Resort %>%
+  mutate(Opening_yday =  yday(Resort$Opening),
+         Closing_yday = yday(Resort$Closing))
+
+#In this step we will create a clean data set with max and min temp for each resort according to opening and closing day of each resort
+
+#Create a placeholder for the data set
+resort_data <-NULL
+
+#This loops through each resort and makes a dataset for that resort, then combines together
+for (i in 1:nrow(Resort)) {
+  resort <- as.character(Resort[i,1])  #choose resort
+  open <- as.numeric(Resort[i,"Opening_yday"])      #opening date
+  close <- as.numeric(Resort[i,"Closing_yday"])     #closing date
+  #Filters the big database to only have data from this resort
+  r <- weather_data %>% dplyr::filter(site == resort) # %>% mutate(date_noyear = format(date, format="%m-%d"))
+  #Now filter this to only keep dates when the resort is open using open and close date
+  r <- r %>% dplyr::filter(yday >= open | yday <= close) %>%
+    select(site, date, Tmax, Tmin, yday)
+  #Fills the empty data frame first and combines the individual datasets created in each loop.
+resort_data <- rbind(r, resort_data)
+}  
+```
+
+Now we aggregate and summarize daily values by ski resort season.
+```{r }
+#create a placeholder for the cleaned and summarized dataset
+data <- NULL
+#This section loops through the dataset and create summary (mean) by each resort
+for (i in 1:nrow(Resort)) {
+  
+  resort <- as.character(Resort[i,1])
+  #Opening and closing date of resort, we will use this to create ski season
+  open <- as.Date(Resort[i,"Opening"])
+  close <- as.Date(Resort[i,"Closing"])
+
+  offset <- Resort[[i,"Opening_yday"]] 
+  d <- resort_data %>%
+  filter(site == resort)%>%
+    mutate(year = lubridate::year(date)) %>%
+    mutate(SkiSeason = case_when(yday <= 210 ~ (year - 1), yday >= 211 ~ year)) %>% # So Nov - April appears in one year
+    group_by(site, SkiSeason) %>% # Group by resort and ski season
+    summarise(
+      start_date = min(date), end_date = max(date),
+      mean_tmax=mean(Tmax), mean_tmin=mean(Tmin), n_days = n(),
+      days_less_5c = sum(Tmin <= -5),
+      proportion_less_5c = days_less_5c / n_days)%>%
+    filter(SkiSeason >= 1980, SkiSeason <= 2018)
+  data <- rbind(d, data)
+}
+```
+
+# 4 - Plots
+
+```{r echo=FALSE, fig.height=7, fig.width=7}
+d2 <- data %>% mutate(site2 = site)
+d2$site2 <- as.factor(d2$site2)
+d2$site2 <- fct_relevel(d2$site2, levels = c("Brighton", "Alta", "Powder Mountain", "Solitude", "Snowbird", "Beaver Mountain", "Deer Valley", "Park City", "Snowbasin", "Sundance", "Cherry Peak", "Nordic Valley", "Eagle Point", "Brian Head"))
+
+# Uncomment this if you want scaled temperature data (anomalies), and chance y in the figure to scaled_tmax or scaled_tmin
+  #mutate(scaled_tmax = scale(mean_tmax), 
+       #  scaled_tmin= scale(mean_tmin))
+
+# Max temp figure
+a <- ggplot()+
+  geom_line(data=d2, aes(x=SkiSeason, y = mean_tmax), 
+            color = "black") + 
+  geom_smooth(data=d2, aes(SkiSeason, y= mean_tmax),
+              method="lm", color ="red")+
+  labs(title= " ", y = "Mean maximum temperature (°C) by ski season", x = "")+
+  theme(plot.title = element_text(hjust = 0.5, size=12)) +
+  xlim(1980, 2018)+
+  facet_wrap( ~ site2,
+              scales = "free_x") # if removed, x ticks don't show in all plots
+a
+
+# Min temp figure
+b <- ggplot()+
+  geom_line(data=d2, aes(x=SkiSeason, y = mean_tmin), 
+            color = "black") + 
+  geom_smooth(data=d2, aes(SkiSeason, mean_tmin), 
+              method="lm", color ="blue") +
+  labs(title= " ", y = "Mean minimum temperature (°C) by ski season", x = "")+
+  theme(plot.title = element_text(hjust = 0.5, size=12)) +
+  xlim(1980, 2018)+
+  facet_wrap( ~ site2 ,
+              scales = "free_x") # if removed, x ticks don't show in all plots
+b
+
+# Proportion figure
+c<- ggplot()+
+  geom_line(data=d2, aes(x=SkiSeason, y = proportion_less_5c), color = "black") + 
+  geom_smooth(data=d2, aes(SkiSeason, proportion_less_5c), method="lm", color ="green") +
+  labs(title= " ", y = "Proportion of days with minimum temperature -5°C or colder, by ski season", x = "") + 
+  theme(plot.title = element_text(hjust = 0.5, size=12)) +
+  xlim(1980, 2018) +
+  facet_wrap( ~ site2,
+              scales = "free_x") # if removed, x ticks don't show in all plots
+c
+```
+
+```{r echo=FALSE}
+#Save the plots
+##Uncomment the following lines if you want to save the plots
+
+#ggsave("Trend_Tmax_ordered.tiff", plot= a , height=7 , width=7 , units= "in", dpi= 600)
+#ggsave("Trend_Tmin_ordered.tiff", plot= b , height=7 , width=7 , units= "in", dpi= 600)
+#ggsave("Trend_T_5_ordered.tiff", plot= c , height=7 , width=7 , units= "in", dpi= 600)
+```
+
+
+# 5- Mann-Kendall Trend analysis with Sen's Slope
+
+Here we run Mann-Kendall Trend and Sen's Slope for each resort to see the general trend in maximum temperature, minimum temperature, and the proportion of the season with minimum temperatures -5 C or below from 1980 - 2018. These are to get a sense of the general trend; there is high year-to-year variability in any weather data. Regressions each have n = 39 (one data point per season, 1980 - 2018). 
+
+```{r}
+# Setting up an empty table to record results
+table1 <- matrix(NA, nrow = 14, ncol = 10)
+x <- c("metric", "resort", "z stat", "S", "S var", "tau", "p-value", "sen's slope", "95% CI, low", "95% CI, high")
+colnames(table1) <- x
+table1 <- as.data.frame(table1)
+table1[,1:2] <- as.character(table1[,1:2])
+
+# Reorder Resorts to match order in the paper
+order <- c("Brighton", "Alta", "Powder Mountain", "Solitude", "Snowbird", "Beaver Mountain", "Deer Valley", "Park City", "Snowbasin", "Sundance", "Cherry Peak", "Nordic Valley", "Eagle Point", "Brian Head")
+Resort <- Resort %>% slice(match(order, Site))
+
+##### Max Temp M-K
+for (i in 1:nrow(Resort)) {
+  resort <- as.character(Resort[i,1])  #choose resort
+  seasonal_data <- data %>% dplyr::filter(site == resort) #Filters the database to only have data from this resort
+  maxtemp <- trend::mk.test(seasonal_data$mean_tmax, continuity = TRUE) # Runs Mann-Kendall trend test
+  sen <- sens.slope(seasonal_data$mean_tmax, conf.level = 0.95)
+  # Fill in the table
+  table1[i,1] <- "Mean Seasonal Daily Max Temp"
+  table1[i,2] <- resort
+  table1[i,3] <- maxtemp$statistic # records z statistic
+  table1[i,4] <- maxtemp$estimates[1] # records S
+  table1[i,5] <- maxtemp$estimates[2] # records variance on S
+  table1[i,6] <- maxtemp$estimates[3] # records tau
+  table1[i,7] <- maxtemp$p.value # records p-value
+  table1[i,8] <- sen$estimates # records Sen's slope
+  table1[i,9] <- sen$conf.int[1] # records CI
+  table1[i,10] <- sen$conf.int[2] # records CI
+}
+
+# Rounds everything to 3 decimals
+table1[,3:10] <- round(table1[,3:10], 3)
+table1
+# Output table if desired
+#write.csv(table1, "M_K_trends_maxtemp.csv", row.names = FALSE)
+
+##### Min Temp M-K
+for (i in 1:nrow(Resort)) {
+  resort <- as.character(Resort[i,1])  #choose resort
+  seasonal_data <- data %>% dplyr::filter(site == resort) #Filters the database to only have data from this resort
+  mintemp <- trend::mk.test(seasonal_data$mean_tmin, continuity = TRUE) # Runs Mann-Kendall trend test
+  sen <- sens.slope(seasonal_data$mean_tmin, conf.level = 0.95)
+  # Fill in the table
+  table1[i,1] <- "Mean Seasonal Daily Min Temp"
+  table1[i,2] <- resort
+  table1[i,3] <- mintemp$statistic # records z statistic
+  table1[i,4] <- mintemp$estimates[1] # records S
+  table1[i,5] <- mintemp$estimates[2] # records variance on S
+  table1[i,6] <- mintemp$estimates[3] # records tau
+  table1[i,7] <- mintemp$p.value # records p-value
+  table1[i,8] <- sen$estimates # records Sen's slope
+  table1[i,9] <- sen$conf.int[1] # records CI
+  table1[i,10] <- sen$conf.int[2] # records CI
+}
+
+# Rounds everything to 3 decimals
+table1[,3:10] <- round(table1[,3:10], 3)
+table1
+# Output table if desired
+#write.csv(table1, "M_K_trends_mintemp.csv", row.names = FALSE)
+
+##### Proportion of season -5C or below, M-K
+for (i in 1:nrow(Resort)) {
+  resort <- as.character(Resort[i,1])  #choose resort
+  seasonal_data <- data %>% dplyr::filter(site == resort) #Filters the database to only have data from this resort
+  prop5c <- trend::mk.test(seasonal_data$proportion_less_5c, continuity = TRUE) # Runs Mann-Kendall trend test
+  sen <- sens.slope(seasonal_data$proportion_less_5c, conf.level = 0.95)
+  # Fill in the table
+  table1[i,1] <- "Proportion of Season -5C or below"
+  table1[i,2] <- resort
+  table1[i,3] <- prop5c$statistic # records z statistic
+  table1[i,4] <- prop5c$estimates[1] # records S
+  table1[i,5] <- prop5c$estimates[2] # records variance on S
+  table1[i,6] <- prop5c$estimates[3] # records tau
+  table1[i,7] <- prop5c$p.value # records p-value
+  table1[i,8] <- sen$estimates # records Sen's slope
+  table1[i,9] <- sen$conf.int[1] # records CI
+  table1[i,10] <- sen$conf.int[2] # records CI
+}
+
+# Rounds everything to 3 decimals
+table1[,3:10] <- round(table1[,3:10], 3)
+table1
+# Output table if desired
+#write.csv(table1, "M_K_trends_prop5c.csv", row.names = FALSE)
+```
+
+# 6 - This part only looks at the temperatures from opening through the New Years Holiday (Jan 2)
+
+```{r, fig.height=7, fig.width=7}
+#Create a placeholder for the data set
+resort_data <-NULL
+#This loops through each resort and makes a dataset for that resort, then combines together
+for (i in 1:nrow(Resort)) {
+  resort <- as.character(Resort[i,1])  #choose resort
+  open <- as.numeric(Resort[i,"Opening_yday"])      #opening date
+  close <- as.numeric(Resort[i,"Closing_yday"])     #closing date
+  #Filters the big database to only have data from this resort
+  r <- weather_data %>% dplyr::filter(site == resort) # %>% mutate(date_noyear = format(date, format="%m-%d"))
+  #Now filter this to only keep dates when the resort is open using open and close date
+  r <- r %>% dplyr::filter(yday >= open | yday <= 2) %>%
+    select(site, date, Tmax, Tmin, yday)
+  #Fills the empty data frame first and combines the individual datasets created in each loop.
+resort_data <- rbind(r, resort_data)
+}  
+
+#create a placeholder for the cleaned and summarized dataset
+data <- NULL
+#This section loops through the dataset and create summary (mean) by each resort
+for (i in 1:nrow(Resort)) {
+  resort <- as.character(Resort[i,1])
+  #Opening and closing date of resort, we will use this to create ski season
+  open <- as.Date(Resort[i,"Opening"])
+  close <- as.Date(Resort[i,"Closing"])
+
+  offset <- Resort[[i,"Opening_yday"]] 
+  d <- resort_data %>%
+  filter(site == resort)%>%
+    mutate(year = lubridate::year(date)) %>%
+    mutate(SkiSeason = case_when(yday <= 210 ~ (year - 1), yday >= 211 ~ year)) %>% # Offset so Nov - April appear in same season/year
+    group_by(site, SkiSeason) %>% #Group by ski season and resort
+    summarise(
+      start_date = min(date), end_date = max(date),
+      mean_tmax=mean(Tmax), mean_tmin=mean(Tmin), n_days = n(),
+      days_less_5c = sum(Tmin <= -5),
+      proportion_less_5c = days_less_5c / n_days)%>%
+    filter(SkiSeason >= 1980, SkiSeason <= 2018)
+  data <- rbind(d, data)
+}
+
+# Figure for proportion with snowmaking
+d2 <- data %>% mutate(site2 = site)
+d2$site2 <- as.factor(d2$site2)
+d2$site2 <- fct_relevel(d2$site2, levels = c("Brighton", "Alta", "Powder Mountain", "Solitude", "Snowbird", "Beaver Mountain", "Deer Valley", "Park City", "Snowbasin", "Sundance", "Cherry Peak", "Nordic Valley", "Eagle Point", "Brian Head"))
+
+c<- ggplot()+
+  geom_line(data=d2, aes(x=SkiSeason, y = proportion_less_5c), color = "black") + 
+  geom_smooth(data=d2, aes(SkiSeason, proportion_less_5c), method="lm", color ="green") +
+  labs(title= " ", y = "Proportion of days with minimum temperature -5°C or colder, opening - New Years", x = "") + 
+  theme(plot.title = element_text(hjust = 0.5, size=12)) +
+  xlim(1980, 2018) +
+  facet_wrap( ~ site2,
+              scales = "free_x") # if removed, x ticks don't show in all plots
+c
+
+# Uncomment if you want to save the figure
+#ggsave("Trend_T_5_EarlySeason_ordered.tiff", plot= c , height=7 , width=7 , units= "in", dpi= 600)
+
+# Setting up an empty table to record results
+table1 <- matrix(NA, nrow = 14, ncol = 10)
+x <- c("metric", "resort", "z stat", "S", "S var", "tau", "p-value", "sen's slope", "95% CI, low", "95% CI, high")
+colnames(table1) <- x
+table1 <- as.data.frame(table1)
+table1[,1:2] <- as.character(table1[,1:2])
+
+##### Max Temp M-K
+for (i in 1:nrow(Resort)) {
+  resort <- as.character(Resort[i,1])  #choose resort
+  seasonal_data <- data %>% dplyr::filter(site == resort) #Filters the database to only have data from this resort
+  maxtemp <- trend::mk.test(seasonal_data$mean_tmax, continuity = TRUE) # Runs Mann-Kendall trend test
+  sen <- sens.slope(seasonal_data$mean_tmax, conf.level = 0.95)
+  # Fill in the table
+  table1[i,1] <- "Mean Seasonal Daily Max Temp (Early season)"
+  table1[i,2] <- resort
+  table1[i,3] <- maxtemp$statistic # records z statistic
+  table1[i,4] <- maxtemp$estimates[1] # records S
+  table1[i,5] <- maxtemp$estimates[2] # records variance on S
+  table1[i,6] <- maxtemp$estimates[3] # records tau
+  table1[i,7] <- maxtemp$p.value # records p-value
+  table1[i,8] <- sen$estimates # records Sen's slope
+  table1[i,9] <- sen$conf.int[1] # records CI
+  table1[i,10] <- sen$conf.int[2] # records CI
+}
+
+# Rounds everything to 3 decimals
+table1[,3:10] <- round(table1[,3:10], 3)
+table1
+# Output table if desired
+#write.csv(table1, "M_K_trends_maxtemp_EarlySeason.csv", row.names = FALSE)
+
+##### Min Temp M-K
+for (i in 1:nrow(Resort)) {
+  resort <- as.character(Resort[i,1])  #choose resort
+  seasonal_data <- data %>% dplyr::filter(site == resort) #Filters the database to only have data from this resort
+  mintemp <- trend::mk.test(seasonal_data$mean_tmin, continuity = TRUE) # Runs Mann-Kendall trend test
+  sen <- sens.slope(seasonal_data$mean_tmin, conf.level = 0.95)
+  # Fill in the table
+  table1[i,1] <- "Mean Seasonal Daily Min Temp (Early season)"
+  table1[i,2] <- resort
+  table1[i,3] <- mintemp$statistic # records z statistic
+  table1[i,4] <- mintemp$estimates[1] # records S
+  table1[i,5] <- mintemp$estimates[2] # records variance on S
+  table1[i,6] <- mintemp$estimates[3] # records tau
+  table1[i,7] <- mintemp$p.value # records p-value
+  table1[i,8] <- sen$estimates # records Sen's slope
+  table1[i,9] <- sen$conf.int[1] # records CI
+  table1[i,10] <- sen$conf.int[2] # records CI
+}
+
+# Rounds everything to 3 decimals
+table1[,3:10] <- round(table1[,3:10], 3)
+table1
+# Output table if desired
+# write.csv(table1, "M_K_trends_mintemp_EarlySeason.csv", row.names = FALSE)
+
+##### Proportion of season snowmaking, M-K
+for (i in 1:nrow(Resort)) {
+  resort <- as.character(Resort[i,1])  #choose resort
+  seasonal_data <- data %>% dplyr::filter(site == resort) #Filters the database to only have data from this resort
+  prop5c <- trend::mk.test(seasonal_data$proportion_less_5c, continuity = TRUE) # Runs Mann-Kendall trend test
+  sen <- sens.slope(seasonal_data$proportion_less_5c, conf.level = 0.95)
+  # Fill in the table
+  table1[i,1] <- "Proportion of Season -5C or below (Early Season)"
+  table1[i,2] <- resort
+  table1[i,3] <- prop5c$statistic # records z statistic
+  table1[i,4] <- prop5c$estimates[1] # records S
+  table1[i,5] <- prop5c$estimates[2] # records variance on S
+  table1[i,6] <- prop5c$estimates[3] # records tau
+  table1[i,7] <- prop5c$p.value # records p-value
+  table1[i,8] <- sen$estimates # records Sen's slope
+  table1[i,9] <- sen$conf.int[1] # records CI
+  table1[i,10] <- sen$conf.int[2] # records CI
+}
+
+# Rounds everything to 3 decimals
+table1[,3:10] <- round(table1[,3:10], 3)
+table1
+# Output table if desired
+# write.csv(table1, "M_K_trends_prop5c_EarlySeason.csv", row.names = FALSE)
+```
+
+
