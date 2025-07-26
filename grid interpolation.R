@@ -7,13 +7,14 @@ library(sp)
 library(sf)
 library(ggplot2)
 library(dplyr)
+library(purrr)
 
 rm(list = ls())
 #memory.limit(size = 19600)
 setwd("D:/Paper_Climate/Data/siguiente paper/of interpolation")
 #setwd("D:/X/cuadrantes")
 # Load the shapefile
-c_shp <- st_read("SHP/Area_cut.shp")  # c_shp <- st_read("SHP/vectorPeru1.shp")
+c_shp <- st_read("SHP/PERU.shp")  # c_shp <- st_read("SHP/vectorPeru1.shp")
 # c_shp <- st_read("c1/powerc1.shp") 
 # Check the CRS of the shapefile
 print(st_crs(c_shp))
@@ -47,7 +48,7 @@ grid_sf <- st_as_sf(grid, coords = c("lon","lat"), crs = 4326)
 points_within_pd <- st_intersection(grid_sf, c_shp)
 
 # Guardar los puntos como un archivo shapefile
-#st_write(points_within_pd, "Peru5km.shp", driver = "ESRI Shapefile")
+#st_write(points_within_pd, "D:/X/Peru7OKkm.shp", driver = "ESRI Shapefile")
 
 # plot the grid points-shp
 ggplot() +
@@ -66,7 +67,7 @@ names(points_within_pd_df) <- c("Lon", "Lat", "Grid")
 # Selecciona solo las columnas Lat, Lon y Grid
 points_within_pd_df <- points_within_pd_df[, c("Lat", "Lon", "Grid")]
 
-write.csv(points_within_pd_df, "CDBC_Peru-Ecuad7km.csv", row.names = FALSE)  #okkkk
+write.csv(points_within_pd_df, "CDBC_Peru7km.csv", row.names = FALSE)  #okkkk
 #write_parquet(points_within_pd_df, "CDBC_Peru7km.parquet")
 #write.csv(points_within_pd_df, "grid2.csv", row.names = FALSE)
 load(file="D:/Paper_Climate/Data/siguiente paper/of interpolation/grid2.rda")
@@ -82,7 +83,7 @@ setwd("D:/Paper_Climate/Data/siguiente paper/of interpolation")
 
 #head(pos)
 
-obsg <- read.csv("POWER-PE7Km/Per-A2.csv")
+obsg <- read.csv("A7.csv")#######obsg <- read.csv("POWER-PE7Km/Per-A1.csv")
 #obsg  <- read_parquet("CDBC_Peru8km.parquet")
 #head(obsg)
 
@@ -95,7 +96,7 @@ robs <- rasterFromXYZ(cbind(obsg[, 2], obsg[, 1], obsg[,3]))
 ###########################################################
 
 setwd("D:/Paper_Climate/Data/siguiente paper/ncf4/area_shp")
-setwd("D:/X/RAIN4PE")#D:/X/RAIN4PE    #PowerNasaPeru1
+setwd("D:/X/RAIN4PE")#D:/X/RAIN4PE    #PowerNasaPeru1 # #D:/X/LANDPERU
 fln <- list.files(pattern = ".nc")
 
 for(f in 1:length(fln)) {
@@ -129,7 +130,7 @@ nc_close(nc)
 
 for(f in 1 : length(fln))  {
     #var <- brick(fln[f], stopIfNotEqualSpaced = F)  # NO HAY VARIABLE
-    var <- brick(fln[f], varname = "pcp", stopIfNotEqualSpaced = F) #PRECTOTCORR
+    var <- brick(fln[f], varname = "pcp", stopIfNotEqualSpaced = F) #PRECTOTCORR,  pcp, ppt
     # Realizar la interpolación bilineal
     rpre <- resample(var, robs, method= "bilinear")
     
@@ -170,25 +171,38 @@ colnames(tDat) <- hd
 #View(tDat)
 #tDat
 # Convertir las fechas y añadir como columna "Date"
-tDat3 <- data.frame(Date = format(as.Date(gsub("X", "", rownames(tDat)), 
+tDatok <- data.frame(Date = format(as.Date(gsub("X", "", rownames(tDat)), 
                                          format = "%Y.%m.%d"), "%Y-%m-%d"), tDat, check.names = FALSE)
 
 # Verifica si hay fechas duplicadas
-duplicated_dates <- tDat3$Date[duplicated(tDat3$Date)]
+duplicated_dates <- tDatok$Date[duplicated(tDatok$Date)]
 if (length(duplicated_dates) > 0) {
   cat("Fechas duplicadas encontradas:\n")
   print(duplicated_dates)
   
   # Elimina filas con fechas duplicadas
-  tDat3 <- tDat3[!duplicated(tDat3$Date), ]
+  tDatok <- tDatok[!duplicated(tDatok$Date), ]
   cat("Fechas duplicadas eliminadas.\n")
 }
 
 # Ordena los datos por la columna "Date" para asegurar el orden cronológico
-tDat3 <- tDat3[order(tDat3$Date), ]
+tDat1 <- tDatok[order(tDatok$Date), ] # of each A1, A2...
+tDat2 <- tDatok[order(tDatok$Date), ]
+tDat3 <- tDatok[order(tDatok$Date), ]
+tDat4 <- tDatok[order(tDatok$Date), ]
 
-# Unir tDat2 y tDat3 utilizando la columna "Date" como clave
-tDat_merged <- merge(tDat2, tDat3, by = "Date", all = TRUE)
+lista_df <- list(tDat1, tDat2,tDat3, tDat4)
+tDat_mergedOK <- reduce(lista_df, full_join, by = "Date")
+
+Sys.setenv(NOT_CRAN = "true")
+install.packages(
+  "polars",
+  repos = c("https://rpolars.r-universe.dev", "https://cloud.r-project.org")
+)
+
+library(polars)
+
+write.csv(tDat4, "D:/Paper_Climate/Data/siguiente paper/of interpolation/DataObs_BC/A4Obs.csv", row.names = F)
 
 setwd("D:/Paper_Climate/Data/siguiente paper/ncf4")
 #write.csv(tDat3, "D:/Paper_Climate/Data/siguiente paper/of interpolation/POWER-PE7Km//BC-PER-A1prueba.csv", row.names = F)
@@ -196,13 +210,13 @@ setwd("D:/Paper_Climate/Data/siguiente paper/ncf4")
 library(arrow)
 
 # Guardar como archivo Parquet
-write_parquet(tDat_merged, "CDBC-POWERPeru5km_c1-c3.parquet")
+write_parquet(tDat_mergedOK, "Peru7kmOK.parquet")
 
 ##############333333333333333333333333333333333333333333333333
 #############  SAVE OF BIAS CORRECTION ##############
 
 # Obtener los nombres de las columnas (coordenadas)
-coordinates <- colnames(tDat3)[-1]  # Sin la columna 'Date'
+coordinates <- colnames(tDat1)[-1]  # Sin la columna 'Date'
 
 # Extraer las latitudes y longitudes de los nombres de las columnas
 latitudes <- as.numeric(gsub(".*X(.*)", "\\1", coordinates))
@@ -213,13 +227,13 @@ lat_row <- c("N", latitudes)
 lon_row <- c("E", longitudes)
 
 # Extraer las fechas y datos de precipitación
-dates <- tDat3$Date
-precipitation_data <- as.matrix(tDat3[, -1])
+dates <- tDat1$Date
+precipitation_data <- as.matrix(tDat1[, -1])
 
 # Combinar todo en un solo DataFrame
 final_output <- rbind(lat_row, lon_row, cbind(dates, precipitation_data))
 
-write.csv(final_output, "D:/Paper_Climate/Data/siguiente paper/BC-POWER-PE7Km/PERURAIN4PE-A2-BC.csv", row.names = FALSE, col.names = FALSE)
+write.csv(final_output, "D:/Paper_Climate/Data/siguiente paper/of interpolation/DataObs_BC/A7ObsBC.csv", row.names = FALSE, col.names = FALSE)
 
 # Inicializa la lista de nombres de columnas basada en las ubicaciones
 
@@ -231,14 +245,14 @@ setwd("D:/Paper_Climate/Data/siguiente paper/of interpolation")
 # Definir el rango total de Perú
 # Coordenadas ajustadas para cubrir Perú y Ecuador
 # Coordenadas ajustadas según el bounding box
-lat_min <- -19.03  # Latitud mínima
-lat_max <- 2.07   # Latitud máxima
-lon_min <- -81.34  # Longitud mínima
-lon_max <- -66.98  # Longitud máxima
+lat_min <- -18.35  # Latitud mínima -19.03
+lat_max <- -0.04  # Latitud máxima   2.07
+lon_min <- -81.35  # Longitud mínima   -81.34
+lon_max <- -68.65  # Longitud máxima       -66.98
 
 # Tamaño de cada subregión (en grados)
-lat_step <- 3.0   # Paso de latitud  # 3.0  
-lon_step <- 6.5   # Paso de longitud # Paso de longitud# 6.5
+lat_step <- 4.10   # Paso de latitud  # 3.0  
+lon_step <- 4.25   # Paso de longitud # Paso de longitud# 6.5
 
 # Crear un data.frame con las coordenadas de las subregiones
 lat_seq <- seq(lat_min, lat_max, by = lat_step)
@@ -270,7 +284,7 @@ st_crs(subregiones_sf) <- 4326  # Definir CRS WGS 84
 #st_write(subregiones_sf, "D:/X/subregiones7km.shp", delete_dsn = TRUE)
 
 # Leer el archivo shapefile y definir CRS si es necesario
-shapefile_path <- "SHP/Area_cut.shp"  # Cambia esto a la ruta de tu shapefile
+shapefile_path <- "SHP/PERU.shp"  # Cambia esto a la ruta de tu shapefile  shapefile_path <- "SHP/Area_cut.shp"  
 shapefile_sf <- st_read(shapefile_path)
 
 # Asegurarse de que el shapefile tenga CRS WGS 84
@@ -292,7 +306,7 @@ ggplot() +
 ################   of 7 columns and 3 rows #####################
 
 # Número de divisiones deseadas
-num_filas <- 3
+num_filas <- 7
 num_columnas <- 2
 
 # Calcular pasos dinámicos para latitud y longitud
@@ -325,9 +339,11 @@ subregiones_df$geometry <- mapply(function(lon_min, lat_min, lon_max, lat_max) {
 # Convertir el data.frame a un objeto sf y definir CRS
 subregiones_sf <- st_sf(subregiones_df)
 st_crs(subregiones_sf) <- 4326  # Definir CRS WGS 84
+# Guardar el objeto subregiones_sf en un archivo shapefile
+st_write(subregiones_sf, "D:/X/PERU7km7x2.shp", delete_dsn = TRUE)
 
 # Leer el shapefile de referencia
-shapefile_path <- "SHP/Area_cut.shp"  # Ruta al shapefile
+shapefile_path <- "SHP/PERU.shp"  # Ruta al shapefile
 shapefile_sf <- st_read(shapefile_path)
 
 # Verificar y definir CRS del shapefile
