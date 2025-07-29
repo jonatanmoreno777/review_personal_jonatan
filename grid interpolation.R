@@ -77,26 +77,19 @@ print(points_within_pd_df)
 
 setwd("D:/Paper_Climate/Data/siguiente paper/of interpolation")
 #pos <- load(file="D:/Paper_Climate/Data/siguiente paper/of interpolation/grid2.rda")
-#pos <- get(pos)
-#pos <- read.csv ("gridok2.csv", header= T)
-#pos <- pos [, 1:2]
 
-#head(pos)
+##############     LOAD GRILLED DATA OF PERU #########3###
 
-obsg <- read.csv("A7.csv")#######obsg <- read.csv("POWER-PE7Km/Per-A1.csv")
-#obsg  <- read_parquet("CDBC_Peru8km.parquet")
-#head(obsg)
+obsg <- read.csv("A6.csv")#######obsg <- read.csv("POWER-PE7Km/Per-A1.csv")
 
 robs <- rasterFromXYZ(cbind(obsg[, 2], obsg[, 1], obsg[,3])) 
 
 #robs <- rasterFromXYZ(pos[, c(2, 1, 3)]) 
 
 ###########################################################
-###########################################################
-###########################################################
-
-setwd("D:/Paper_Climate/Data/siguiente paper/ncf4/area_shp")
-setwd("D:/X/RAIN4PE")#D:/X/RAIN4PE    #PowerNasaPeru1 # #D:/X/LANDPERU
+#################D GRILLED DATA .nc #########################
+#setwd("D:/Paper_Climate/Data/siguiente paper/ncf4/area_shp")
+setwd("D:/X/LANDPERU")#D:/X/RAIN4PE    #PowerNasaPeru1 # #D:/X/LANDPERU
 fln <- list.files(pattern = ".nc")
 
 for(f in 1:length(fln)) {
@@ -106,59 +99,48 @@ for(f in 1:length(fln)) {
   nc_close(nc)                               # Cierra el archivo NetCDF
 }
 
-
-for(f in 1 : length(fln))  {
-var <- brick(fln[f], stopIfNotEqualSpaced = F)
-# run write "prec" in console to get resolution of GCM
-rpre <- resample(var, robs, method= "bilinear")
-dat <- rasterToPoints(rpre)
-
-obsl <- cbind(obsg[,2], obsg[, 1])
-datt <- merge(obsl, dat, by= c(1,2))
-
-if(f==1) Dat <- datt
-if(f>1) Dat <- cbind(Dat, datt[, 3: ncol(datt)])
-print(f)
-flush.console()
-}
-
-nc <- nc_open(fln[f])
-print(nc$var)  # Imprime las variables disponibles
-nc_close(nc)
-
 ############################  BILINEAL INTERPOLATION ######################
-
 for(f in 1 : length(fln))  {
-    #var <- brick(fln[f], stopIfNotEqualSpaced = F)  # NO HAY VARIABLE
-    var <- brick(fln[f], varname = "pcp", stopIfNotEqualSpaced = F) #PRECTOTCORR,  pcp, ppt
-    # Realizar la interpolación bilineal
-    rpre <- resample(var, robs, method= "bilinear")
-    
-    # Convertir los datos interpolados en puntos (lat, lon, valor)
-    dat <- rasterToPoints(rpre)
-    
-    # Redondear las coordenadas latitud y longitud para que coincidan con los puntos del archivo 'obsg'
-    dat[, 1] <- round(dat[, 1], 2)  # Redondear la latitud
-    dat[, 2] <- round(dat[, 2], 2)  # Redondear la longitud
-    
-    # Crear las coordenadas de las observaciones
-    obsl <- cbind(round(obsg[,2], 2), round(obsg[, 1], 2))  # Redondear también las coordenadas de 'obsg'
-    obsl <- cbind(obsg[,2], obsg[, 1])
-    # Combinar (merge) los puntos de las observaciones con los datos interpolados
-    datt <- merge(obsl, dat, by= c(1,2))
-    
-    # Ordenar el resultado final para que coincida con el orden de 'obsg'
-    datt <- datt[order(match(paste(datt[, 1], datt[, 2]), paste(obsl[, 1], obsl[, 2]))), ]
-    
-    # Almacenar los datos interpolados
-    if(f==1) Dat <- datt
-    if(f>1) Dat <- cbind(Dat, datt[, 3: ncol(datt)])
-    print(f)
-    flush.console()
-}  # OKKK
-
-#extent(prec)
-#extent(robs)
+  var <- brick(fln[f], varname = "ppt", stopIfNotEqualSpaced = F) # cargar variable
+  
+  # Interpolación bilineal
+  rpre <- resample(var, robs, method= "bilinear")
+  
+  # Extraer puntos interpolados
+  dat <- rasterToPoints(rpre)
+  
+  # Redondear lon/lat interpolados
+  dat[, 1] <- round(dat[, 1], 2)  # lon
+  dat[, 2] <- round(dat[, 2], 2)  # lat
+  
+  # Crear coordenadas redondeadas de observaciones
+  obsl <- cbind(round(obsg[,2], 2), round(obsg[,1], 2))  # lon, lat
+  
+  # Combinar observaciones con interpolados
+  datt <- merge(obsl, dat, by= c(1,2))
+  
+  # Revisar coordenadas de 'obsg' que NO fueron encontradas en los interpolados
+  obsl_coords <- paste(obsl[,1], obsl[,2])         # lon lat
+  dat_coords <- paste(datt[,1], datt[,2])          # lon lat que sí fueron interpolados
+  missing_coords <- obsl[!(obsl_coords %in% dat_coords), ]
+  
+  # Ordenar resultados según obsg
+  datt <- datt[order(match(paste(datt[,1], datt[,2]), obsl_coords)), ]
+  
+  # Guardar resultados
+  if(f == 1) {
+    Dat <- datt
+  } else {
+    Dat <- cbind(Dat, datt[, 3:ncol(datt)])
+  }
+  
+  print(f)
+  flush.console()
+}
+# OKKK
+#extent(prec)#extent(robs
+print(missing_coords)# see coordinates out of the grilled raster
+#view
 var
 rpre
 #View(Dat)
@@ -194,25 +176,15 @@ tDat4 <- tDatok[order(tDatok$Date), ]
 lista_df <- list(tDat1, tDat2,tDat3, tDat4)
 tDat_mergedOK <- reduce(lista_df, full_join, by = "Date")
 
-Sys.setenv(NOT_CRAN = "true")
-install.packages(
-  "polars",
-  repos = c("https://rpolars.r-universe.dev", "https://cloud.r-project.org")
-)
-
-library(polars)
-
-write.csv(tDat4, "D:/Paper_Climate/Data/siguiente paper/of interpolation/DataObs_BC/A4Obs.csv", row.names = F)
 
 setwd("D:/Paper_Climate/Data/siguiente paper/ncf4")
-#write.csv(tDat3, "D:/Paper_Climate/Data/siguiente paper/of interpolation/POWER-PE7Km//BC-PER-A1prueba.csv", row.names = F)
+write.csv(tDatok, "D:/X/BC/a3.2prueba.csv", row.names = F)
 
 library(arrow)
-
 # Guardar como archivo Parquet
-write_parquet(tDat_mergedOK, "Peru7kmOK.parquet")
+write_parquet(tDat_mergedOK, "..../Peru7kmOK.parquet")
 
-##############333333333333333333333333333333333333333333333333
+#######################################################
 #############  SAVE OF BIAS CORRECTION ##############
 
 # Obtener los nombres de las columnas (coordenadas)
@@ -231,11 +203,27 @@ dates <- tDat1$Date
 precipitation_data <- as.matrix(tDat1[, -1])
 
 # Combinar todo en un solo DataFrame
-final_output <- rbind(lat_row, lon_row, cbind(dates, precipitation_data))
+final_output <- rbind(lat_row, lon_row, cbind(dates, precipitation_data)) # full time 1981 until 2024
+write.csv(final_output, "D:/X/BC/A6okkk.csv", row.names = F, col.names = F)
+# saved of historical and future data
+fechas <- as.Date(final_output[-c(1, 2), 1])
 
-write.csv(final_output, "D:/Paper_Climate/Data/siguiente paper/of interpolation/DataObs_BC/A7ObsBC.csv", row.names = FALSE, col.names = FALSE)
+filtro <- fechas >= as.Date("2016-01-01") & fechas <= as.Date("2024-12-31") # put time of historical and future data
+#                   as.Date("2016-01-01") & fechas <= as.Date("2024-12-31")
+# Crear nuevo DataFrame con N, E y solo las fechas filtradas
+final_output_hist_futur <- rbind(   # hist or future data
+  final_output[1, ],          # Fila N
+  final_output[2, ],          # Fila E
+  final_output[-c(1, 2), ][filtro, ]
+)
 
-# Inicializa la lista de nombres de columnas basada en las ubicaciones
+
+# save
+cat(
+  apply(final_output_hist_futur, 1, paste, collapse = ","),
+  file = "D:/X/BC/A13hist.csv",
+  sep = "\n"
+)
 
 ###################### GRILLA OF PERU ###########################################
 
@@ -448,145 +436,113 @@ for (f in 1:length(fln)) {
   nc_close(nc)
 }
 
+########### BILINEAR ###########################
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Definir el directorio y cargar las observaciones
-setwd("D:/Paper_Climate/Data/siguiente paper/of interpolation")
-obsg <- read.csv("CDBC_Mantaro.csv")
-
-# Crear un raster a partir de las observaciones (sin redondear)
-robs <- rasterFromXYZ(cbind(obsg[, 2], obsg[, 1], obsg[, 3]))
-
-# Cambiar el directorio a la carpeta donde se encuentran los archivos NetCDF
-setwd("D:/Paper_Climate/Data/siguiente paper/BIAS-MERRA2/PCP")
-fln <- list.files(pattern = ".nc")
-
-# Iterar sobre los archivos NetCDF
-for(f in 1:length(fln)) {
-  file_path <- paste0(getwd(), "/", fln[f])  # Construir la ruta completa al archivo
-  nc <- nc_open(file_path)                   # Abrir el archivo NetCDF
-  print(nc)                                  # Imprimir el contenido del archivo (dimensiones y variables)
-  nc_close(nc)                               # Cerrar el archivo NetCDF
-}
-
-# Abrir el último archivo NetCDF y obtener las variables disponibles
-nc <- nc_open(fln[f])
-print(nc$var)  # Imprime las variables disponibles
-nc_close(nc)
-
-############################  INTERPOLACIÓN BILINEAL ######################
-
-for(f in 1 : length(fln))  {
-  # Cargar la variable de precipitación (PRECTOTCORR) desde el archivo NetCDF
-  var <- brick(fln[f], varname = "PRECTOTCORR", stopIfNotEqualSpaced = F)
+##############
+# Bucle para procesar cada archivo
+for (f in 1:length(fln)) {
   
-  # Realizar la interpolación bilineal
-  rpre <- resample(var, robs, method= "bilinear")
+  # Leer el archivo NetCDF como RasterBrick
+  var <- brick(fln[f], varname = "ppt", stopIfNotEqualSpaced = FALSE)  # Cambia "ppt" si es necesario
   
-  # Convertir los datos interpolados en puntos (lat, lon, valor)
-  dat <- rasterToPoints(rpre)
+  # Interpolación bilineal al raster de referencia 'robs'
+  rpre <- resample(var, robs, method = "bilinear")
   
-  # Usar las coordenadas originales sin redondear
-  # Crear las coordenadas de las observaciones sin redondear
-  obsl <- cbind(obsg[, 2], obsg[, 1])  # Usar las coordenadas originales de 'obsg'
+  # Convertir el raster interpolado a puntos (lon, lat, valores)
+  dat <- rasterToPoints(rpre)  # columnas: lon, lat, valores de cada capa temporal
+  dat <- as.data.frame(dat)
   
-  # Combinar (merge) los puntos de las observaciones con los datos interpolados
-  datt <- merge(obsl, dat, by = c(1, 2))
+  # Redondear las coordenadas (lon, lat) a dos decimales
+  dat$lon <- round(dat$x, 2)
+  dat$lat <- round(dat$y, 2)
   
-  # Ordenar el resultado final para que coincida con el orden de 'obsg'
-  datt <- datt[order(match(paste(datt[, 1], datt[, 2]), paste(obsl[, 1], obsl[, 2]))), ]
+  # Crear las coordenadas de referencia de 'obsg' también redondeadas
+  obsl <- data.frame(
+    lon = round(obsg$Lon, 2),
+    lat = round(obsg$Lat, 2)
+  )
   
-  # Almacenar los datos interpolados
-  if(f == 1) {
-    Dat <- datt
+  # Combinar datos interpolados con los puntos de observación (coincidencia exacta de coordenadas)
+  datt <- merge(obsl, dat, by = c("lon", "lat"))
+  
+  # Ordenar para que coincida exactamente con el orden de 'obsg'
+  index <- match(paste(obsl$lon, obsl$lat), paste(datt$lon, datt$lat))
+  datt <- datt[index, ]
+  
+  # Guardar los datos interpolados (solo valores, sin coordenadas)
+  if (f == 1) {
+    Dat <- datt[, -(1:2)]  # Excluye lon y lat
   } else {
-    Dat <- cbind(Dat, datt[, 3:ncol(datt)])  # Añadir las nuevas columnas sin repetir lat/lon
+    Dat <- cbind(Dat, datt[, -(1:2)])
   }
   
-  print(f)
+  cat("Year", f, "Processed\n")
   flush.console()
 }
 
-# Transformar los datos en una tabla con las coordenadas como nombres de columna
-tDat <- round(t(Dat[, 3:ncol(Dat)]) * 1, 2)
+dat_coords <- paste(dat$lon, dat$lat)       # ya están redondeadas
+obsl_coords <- paste(obsl$lon, obsl$lat)    # también redondeadas
 
-# Crear los nombres de las columnas a partir de las coordenadas
-hd <- paste(Dat[, 1], "X", Dat[, 2], sep = "")
+# Filtrar coordenadas de 'obsl' que NO están en 'dat'
+obsl_not_in_dat <- obsl[!(obsl_coords %in% dat_coords), ]
+obsl_not_in_dat
+
+var
+rpre
+#View(Dat)
+
+tDat <- round(t(Dat[, 3: ncol(Dat)])*1, 2)
+#View(tDat)
+
+hd <- paste0(
+  format(round(as.numeric(Dat[, 1]), 2), nsmall = 2),
+  "X",
+  format(round(as.numeric(Dat[, 2]), 2), nsmall = 2)
+)
+
+#hd <- paste(Dat[, 1], "X", Dat [,2], sep = "")
 colnames(tDat) <- hd
-
+#View(tDat)
+#tDat
 # Convertir las fechas y añadir como columna "Date"
-tDat2 <- data.frame(Date = format(as.Date(gsub("X", "", rownames(tDat)), 
-                                          format = "%Y.%m.%d"), "%Y-%m-%d"), tDat, check.names = FALSE)
+tDatok <- data.frame(Date = format(as.Date(gsub("X", "", rownames(tDat)), 
+                                           format = "%Y.%m.%d"), "%Y-%m-%d"), tDat, check.names = FALSE)
 
-# Guardar los resultados en un archivo CSV
-setwd("D:/Paper_Climate/Data/siguiente paper/ncf4")
-write.csv(tDat2, "CDBC-mantaro-7.csv", row.names = FALSE)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#        okkkkkk
-for (f in 1:length(fln)) {
-  var <- brick(fln[f], varname = "PRECTOTCORR", stopIfNotEqualSpaced = F)  # Carga NetCDF
-  rpre <- resample(var, robs, method = "bilinear")  # Interpolación bilineal
-  dat <- rasterToPoints(rpre)  # Extraer datos interpolados
-  dat[, 1] <- round(dat[, 1], 2)  # Redondear lat
-  dat[, 2] <- round(dat[, 2], 2)  # Redondear lon
+# Verifica si hay fechas duplicadas
+duplicated_dates <- tDatok$Date[duplicated(tDatok$Date)]
+if (length(duplicated_dates) > 0) {
+  cat("Fechas duplicadas encontradas:\n")
+  print(duplicated_dates)
   
-  # Coordenadas de observación
-  obsl <- cbind(round(obsg[, 2], 2), round(obsg[, 1], 2))
-  datt <- merge(obsl, dat, by = c(1, 2))  # Combinar datos
-  
-  datt <- datt[order(match(paste(datt[, 1], datt[, 2]), paste(obsl[, 1], obsl[, 2]))), ]
-  if (f == 1) Dat <- datt
-  if (f > 1) Dat <- cbind(Dat, datt[, 3:ncol(datt)])
-  print(f)
-  flush.console()
+  # Elimina filas con fechas duplicadas
+  tDatok <- tDatok[!duplicated(tDatok$Date), ]
+  cat("Fechas duplicadas eliminadas.\n")
 }
 
-# Transponer y guardar
-tDat <- round(t(Dat[, 3:ncol(Dat)]) * 1, 2)
-hd <- paste(Dat[, 1], "X", Dat[, 2], sep = "")
-colnames(tDat) <- hd
+# Ordena los datos por la columna "Date" para asegurar el orden cronológico
+tDat1 <- tDatok[order(tDatok$Date), ] 
+tDat2 <- tDat1[!is.na(tDat1$Date), ] 
+# Muestra las últimas 3 filas para verificar
 
-# Crear DataFrame con fechas
-tDat3 <- data.frame(Date = format(as.Date(gsub("X", "", rownames(tDat)), format = "%Y.%m.%d"), "%Y-%m-%d"), tDat, check.names = FALSE)
+
+coordinates <- colnames(tDat2)[-1]  # Sin la columna 'Date'
+
+# Extraer las latitudes y longitudes de los nombres de las columnas
+latitudes <- as.numeric(gsub(".*X(.*)", "\\1", coordinates))
+longitudes <- as.numeric(gsub("(.*)X.*", "\\1", coordinates))
+
+# Crear las filas de latitud y longitud
+lat_row <- c("N", latitudes)
+lon_row <- c("E", longitudes)
+
+# Extraer las fechas y datos de precipitación
+dates <- tDat2$Date
+precipitation_data <- as.matrix(tDat2[, -1])
+
+# Combinar todo en un solo DataFrame
+final_output <- rbind(lat_row, lon_row, cbind(dates, precipitation_data)) # full time 1981 until 2024
+write.csv(final_output, "D:/X/BC/mor7.csv", row.names = F, col.names = F)
+
+
 
