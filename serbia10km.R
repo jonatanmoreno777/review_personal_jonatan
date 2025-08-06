@@ -408,74 +408,84 @@ xlP.g <- as.list(round(final.model$variable.importance))
 df = t(data.frame(xlP.g[order(unlist(xlP.g), decreasing=TRUE)])) # [1:15,]/100000
 print(df)
 
-
-
-library(ggplot2)
 ######
 ### Plots ######################################################################
 ### stations with DEM ######################################################################
+#################### polt okkkkk ############################################
 
-neighbours <- readOGR(dsn="D:/S/Serbia1km/borders/neighbours.shp", layer="neighbours") #, driver = "GeoJSON")
+library(ggplot2)
+library(ggspatial)
+library(ggnewscale)
+library(rgdal)
+library(raster)
+library(sf)
+
+# Leer datos
+neighbours <- readOGR(dsn="D:/S/Serbia1km/borders/neighbours.shp", layer="neighbours")
 neighbours <- crop(neighbours, extent(18, 24, 41, 47))
+
 load("D:/S/Serbia1km/ogimet/ogimet_serbia08_tmax.rda")
 stations <- unique(ogimet_serbia[, 1:5])
-st <- stations
-coordinates(st) <- c("lon", "lat")
-# bbox(st)
-# plot(st)
-min(stations$lat); max(stations$lat);
-min(stations$lon); max(stations$lon);
-dem_raster <- raster("D:/S/Serbia1km/dem_twi/dem_buff.tif") 
-# hillshade
-slope = terrain(dem_raster, opt='slope') # nagib
-aspect = terrain(dem_raster, opt='aspect') # orjentacija
-hill_raster = hillShade(slope, aspect, 45, 270) # senka deklinacija 45 , azimut 270
+coordinates(stations) <- ~lon+lat
+proj4string(stations) <- CRS("+proj=longlat +datum=WGS84")
+stations_df <- as.data.frame(stations)
+stations_df$type <- "SENAMHI"  # Nueva columna categórica
 
-r <- as(dem_raster, "SpatialPixelsDataFrame")
-hill <- as(hill_raster, "SpatialPixelsDataFrame")
+# DEM y hillshade
+dem_raster <- raster("D:/S/Serbia1km/dem_twi/dem_buff.tif")
+slope <- terrain(dem_raster, opt='slope')
+aspect <- terrain(dem_raster, opt='aspect')
+hill_raster <- hillShade(slope, aspect, 45, 270)
 
-theme = theme_set(theme_minimal())
-sta_dem_plot <- ggplot() + # watch out for attribute name color order
-  geom_raster(data=as.data.frame(hill), aes(x=x, y=y, fill=layer), alpha=1) +
-  scale_fill_gradientn(colours=grey(0:100/100),breaks=layer,guide="none") +
-  new_scale_fill() + 
-  geom_raster(data=as.data.frame(r), aes(x=x, y=y, fill=dem_buff), alpha=0.35) +
-  scale_fill_gradientn(colours = terrain.colors(12, alpha=0.35), name = "DEM [m]") +
-  geom_polygon(data = borders, aes(x = long, y = lat, group = group), alpha = 0, color = "black", fill=NA, size = 0.5) +
-  geom_polygon(data = neighbours, aes(x = long, y = lat, group = group), alpha = 0, color = "black", fill=NA, size = 0.1) +
-  geom_point(data = stations, aes(x = lon, y = lat, color = "red", shape = as.factor("staid")), size = 0.8) +
-  theme(plot.title = element_text(hjust = 8),
-        axis.text = element_text(size = 8),
-        axis.title = element_text(size = 8),
-        text = element_text(size = 8),
-        # legend.key.size= unit(0.2, "cm"),
-        # legend.margin = unit(0, "cm"),
-        legend.title = element_text(size=8, face="bold"),
-        legend.text=element_text(size=8),
-        legend.position = c(1.25,.4),
-        plot.margin=unit(c(5.5,80,5.5,5.5),"points")) +
+# Datos para ggplot
+r <- as.data.frame(rasterToPoints(dem_raster))
+colnames(r) <- c("x", "y", "dem_buff")
+
+hill <- as.data.frame(rasterToPoints(hill_raster))
+colnames(hill) <- c("x", "y", "hillshade")
+
+theme_set(theme_minimal())
+
+sta_dem_plot <- ggplot() +
+  # Hillshade
+  geom_raster(data = hill, aes(x = x, y = y, fill = hillshade), alpha = 1) +
+  scale_fill_gradientn(colours = grey.colors(100), guide = "none") +
+  new_scale_fill() +
+  
+  # DEM
+  geom_raster(data = r, aes(x = x, y = y, fill = dem_buff), alpha = 0.35) +
+  scale_fill_gradientn(colours = terrain.colors(12, alpha = 0.35), name = "DEM [m]") +
+  
+  # Bordes vecinos
+  geom_path(data = fortify(neighbours), aes(x = long, y = lat, group = group), 
+            color = "black", size = 0.2) +
+  
+  # Estaciones con leyenda
+  geom_point(data = stations_df, aes(x = lon, y = lat, color = type, shape = type), 
+             size = 1) +
+  scale_color_manual(name = "Stations", values = c("SENAMHI" = "red")) +
+  scale_shape_manual(name = "Stations", values = c("SENAMHI" = 17)) +
+  
+  # Flecha del norte y escala
+  annotation_scale(location = "bl", width_hint = 0.2) +
+  annotation_north_arrow(location = "tr", which_north = "true", 
+                         style = north_arrow_fancy_orienteering,
+                         height = unit(1, "cm"), width = unit(1, "cm")) +
+  
+  # Coordenadas
+  coord_sf(xlim = c(18, 24), ylim = c(41, 47), expand = FALSE, crs = sf::st_crs(4326)) +
   labs(x = "Longitude", y = "Latitude") +
-  scale_colour_manual(name = "Stations",
-                      labels = c("SYNOP"),
-                      values = c("red"="red")) +
-  scale_shape_manual(name = "Stations",
-                     labels = c("SYNOP"),
-                     values = c(17)) +
-  scalebar(x.min = 18, x.max = 24,
-           y.min = 41, y.max = 47,
-           st.size = 2, location="bottomleft", st.dist=0.03, border.size=0.3,
-           dist = 75, dist_unit = "km",
-           transform = T, model = "WGS84",
-           anchor=c(x=18.3, y=41.6)) +
-  north(x.min = 18, x.max = 24,
-        y.min = 41, y.max = 47,
-        scale = 0.2, symbol = 3, location="topright",
-        anchor=c(x=23.8, y=46.5)) +
-  scale_x_longitude(xmin=18, xmax=24, step=1, limits=c(18, 24)) +
-  scale_y_latitude(ymin=41, ymax=47, step=1, limits=c(41, 47)) +
-  # xlim(18, 23) + ylim(41, 47) +
-  coord_fixed()
-sta_dem_plot
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 9),
+    legend.title = element_text(size = 8, face = "bold"),
+    legend.text = element_text(size = 8),
+    legend.position = "right",
+    plot.margin = unit(c(5.5, 5.5, 5.5, 5.5), "points")
+  )
+
+print(sta_dem_plot)
 
 
 ### Fig1 ###
